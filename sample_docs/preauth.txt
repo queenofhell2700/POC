@@ -1,0 +1,13 @@
+PRE-AUTHORIZATION REQUEST FORM
+Hospital: City Care Hospital
+Patient Name: Ravi Kumar
+Insurer: Star Demo Insurance
+Policy Number: SDI-100245
+Date of Admission: 12-09-2026
+
+Presenting complaints: Chest discomfort and breathlessness
+Duration of present ailment: 3 days
+Previous similar episodes: None
+Provisional diagnosis: Type 2 Diabetes Mellitus with hypertension; cardiac evaluation
+Proposed treatment: Medical management, monitoring, ECG, 2D Echo
+Expected stay: 3 days

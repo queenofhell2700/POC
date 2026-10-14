@@ -1,0 +1,11 @@
+CITY CARE HOSPITAL - ADMISSION CASE SHEET
+Patient: Ravi Kumar
+Date of admission: 12-09-2026
+Insurer: Bajaj General Insurance Limited
+Policy number: POL-123456
+Diagnosis: Acute coronary syndrome
+Presenting complaints: Chest discomfort and breathlessness for 3 days
+Past history: No previous similar episodes. Hypertension, on medication.
+Treatment: ICU admission, ECG, cardiac enzymes, medication. Angiography advised.
+Reason for hospitalization: Monitoring and treatment of chest pain, needs inpatient care
+Reports: TMT report to be submitted
