@@ -1,5 +1,13 @@
+import os
+
 import streamlit as st
-from analyze import analyze_package, number_lines, reextract  # Day 5: reextract
+from dotenv import load_dotenv
+from analyze import (  # Day 5: reextract; HCR-002: verify_source
+    analyze_package,
+    number_lines,
+    reextract,
+    verify_source,
+)
 from schema import DocType
 
 st.set_page_config(page_title="Claim POC", layout="wide")
@@ -13,6 +21,18 @@ st.title("Health Claim Readiness & Rejection Intelligence")
 st.caption(
     "POC • Synthetic / de-identified documents only • AI never approves or rejects a claim"
 )
+
+# HCR-003: clear error if the Gemini settings are missing
+load_dotenv()
+_missing = [
+    k for k in ("GEMINI_API_KEY", "GEMINI_MODEL") if not (os.getenv(k) or "").strip()
+]
+if _missing:
+    st.error(
+        f"Missing setting(s): {', '.join(_missing)}. Copy .env.example to .env, "
+        "fill in the values, and restart the app."
+    )
+    st.stop()
 
 if "uploader_key" not in st.session_state:
     st.session_state["uploader_key"] = 0
@@ -71,7 +91,77 @@ def src(name, page=None, line=None):
         out += f", Page {page}"
     if line:
         out += f", Line {line}"
+    # HCR-002: a citation is only trusted if the file/page/line really exist
+    problem = verify_source(result["docs"], name, page, line) if result else None
+    if problem:
+        out += f" — ⚠ Unverified source / Needs human review ({problem})"
     return out
+
+
+# HCR-005: failed / partial analysis banner (top of page)
+failed_names = [d.name for d in result.get("failed_docs", [])] if result else []
+_state = result.get("case_state", "complete") if result else "complete"
+if _state != "complete":
+    if _state == "failed":
+        st.error("Analysis failed. No document could be analyzed.")
+    else:
+        st.warning(
+            "Partial analysis: the results below are INCOMPLETE. "
+            "Do not treat any missing item or empty section as an all-clear."
+        )
+    for d in result["failed_docs"]:
+        st.markdown(f"- **{d.name}**: extraction failed ({d.error})")
+        if d.file_path and st.button(f"Retry {d.name}", key=f"retry_{d.record_id}"):
+            new_doc = reextract(d.file_path)
+            docs = [
+                new_doc if x.record_id == d.record_id else x for x in result["docs"]
+            ]
+            st.session_state["result"] = analyze_package(
+                [], docs, result["advisor_notes"]
+            )
+            st.rerun()
+    if result["reason_error"] and _state == "partial":
+        st.markdown(f"- Reasoning step failed: {result['reason_error']}")
+if result:
+    with st.expander("Document status"):
+        for name, state in result.get("doc_states", {}).items():
+            st.write(f"**{name}**: {state}")
+
+
+# HCR-006: generated text that asserted a claim decision was withheld
+if result and result.get("guardrail_flags"):
+    st.warning(
+        "Some generated text was withheld because it contained claim-decision, "
+        "coverage or clinical wording. This system does not approve, reject or "
+        "decide coverage. Needs human review."
+    )
+    with st.expander("What was withheld"):
+        for f in result["guardrail_flags"]:
+            st.write(f"{f['where']}: matched “{f['phrase']}”")
+
+
+def not_verified(what):
+    """HCR-005: a negative result is not trusted when a file failed."""
+    st.warning(
+        f"{what} NOT VERIFIED: analysis is partial. "
+        f"Failed file(s): {', '.join(failed_names)}."
+    )
+
+
+# HCR-001: identity mismatch banner (top of page)
+if result and result.get("identity_conflicts"):
+    st.error("Document identity mismatch. Human review required.")
+    st.write(
+        "The uploaded documents do not agree on who/which policy this package belongs to. "
+        "Policy clause applicability to this case is UNRESOLVED. The system does not "
+        "treat the supplied policy as valid for this case."
+    )
+    for c in result["identity_conflicts"]:
+        st.markdown(f"**{c.label}**")
+        for v in c.values:
+            st.markdown(
+                f"- `{v.value}` — {src(v.source_doc, v.source_page, v.source_line)}"
+            )
 
 
 # Day 5: tabs are now named, and Summary is added as the first tab
@@ -113,6 +203,11 @@ with t_summary:
             for s in reasoning.doc_summaries:
                 st.markdown(f"**{s.doc}**" + (f" ({s.doc_type})" if s.doc_type else ""))
                 st.write(s.summary)
+                # HCR-002: summary must belong to a really uploaded document
+                if verify_source(result["docs"], s.doc):
+                    st.caption(
+                        "⚠ Unverified source / Needs human review (no such uploaded file)"
+                    )
         if result["advisor_notes"].strip():
             st.markdown("### Advisor notes (not from a document)")
             st.write(result["advisor_notes"])
@@ -219,6 +314,10 @@ with t_policy:
             st.warning(
                 "No policy document uploaded. All policy conditions: NOT FOUND in supplied documents."
             )
+        if result.get("identity_conflicts"):
+            st.warning(
+                "Policy identity mismatch: clause applicability to this case is unresolved."
+            )
         for cat, label in CAT_LABELS.items():
             st.markdown(f"### {label}")
             items = [c for c in result["clauses"] if c.category.value == cat]
@@ -242,7 +341,10 @@ with t_policy:
                 # Day 5: pre-existing condition flag
                 if l.pre_existing_related:
                     st.warning(
-                        "Possible pre-existing condition. The policy start date and the waiting-period applicability need human review."
+                        "Possible link to the pre-existing disease clause. A past condition does "
+                        "not by itself prove it began before the policy start date. Policy start "
+                        "date and onset date: not documented unless stated in a source above. "
+                        "Needs human review."
                     )
                 st.caption("Applicability: NEEDS HUMAN REVIEW")
         # Day 5: does the supplied policy have a clause for each case item?
@@ -252,7 +354,13 @@ with t_policy:
                 "Shows whether a matching clause exists in the supplied policy. It does not decide coverage."
             )
             for cc in reasoning.coverage_checks:
-                st.markdown(f"**{cc.case_item}** → {cc.status}")
+                # HCR-006: "clause mentioned" is NOT "applicable to this case"
+                _label = {
+                    "CLAUSE MENTIONED IN SUPPLIED POLICY": "Clause mentioned in supplied policy",
+                    "NOT FOUND IN SUPPLIED POLICY": "Not found in supplied policy",
+                }.get(cc.status, "Needs human review")
+                st.markdown(f"**{cc.case_item}** → {_label}")
+                st.caption("Applicable to this case: NEEDS HUMAN REVIEW")
                 st.caption(
                     f"Case source: {src(cc.case_source_doc, cc.case_source_page, cc.case_source_line)}"
                 )
@@ -271,6 +379,8 @@ with t_missing:
         st.write("Nothing yet.")
     elif result["reason_error"]:
         st.error(result["reason_error"])
+    elif not reasoning.missing_evidence and failed_names:
+        not_verified("Missing-evidence check")  # HCR-005
     elif not reasoning.missing_evidence:
         st.write(
             "No referenced or requested documents are missing from the uploaded package."
@@ -288,6 +398,8 @@ with t_contra:
         st.write("Nothing yet.")
     elif result["reason_error"]:
         st.error(result["reason_error"])
+    elif not reasoning.contradictions and failed_names:
+        not_verified("Contradiction check")  # HCR-005
     elif not reasoning.contradictions:
         st.write("No meaningful contradictions found across the uploaded documents.")
     else:
@@ -311,7 +423,10 @@ with t_query:
     elif result["reason_error"]:
         st.error(result["reason_error"])
     elif not any(d.doc_type == DocType.INSURER_LETTER for d in result["docs"]):
-        st.info("No insurer query / rejection letter uploaded.")
+        if failed_names:
+            not_verified("Insurer letter check")  # HCR-005: a failed file may be it
+        else:
+            st.info("No insurer query / rejection letter uploaded.")
     elif not reasoning.query_items:
         st.write(
             "Letter uploaded, but no stated reason was identified. NEEDS HUMAN REVIEW."

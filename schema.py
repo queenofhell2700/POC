@@ -188,3 +188,18 @@ class Reasoning(BaseModel):
     coverage_checks: list[CoverageCheck] = []  # Day 5
     case_overview: str | None = None  # Day 5
     doc_summaries: list[DocSummary] = []  # Day 5
+
+
+# correction
+# HCR-001: cross-document identity check
+class IdentityValue(BaseModel):
+    value: str
+    source_doc: str
+    source_page: int | None = None
+    source_line: str | None = None
+
+
+class IdentityConflict(BaseModel):
+    field: str  # "insurer" | "policy_number" | "patient_name"
+    label: str  # display label
+    values: list[IdentityValue] = Field(default_factory=list)
